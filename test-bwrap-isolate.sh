@@ -17,7 +17,7 @@ bash -n "$LAUNCHER"
 "$LAUNCHER" --help >/dev/null 2>&1
 
 SANDBOX_HOME="$TEST_ROOT/home"
-mkdir -p "$SANDBOX_HOME/work" "$SANDBOX_HOME/.agents" "$SANDBOX_HOME/.claude" "$SANDBOX_HOME/.codex" "$SANDBOX_HOME/.gemini" "$SANDBOX_HOME/.config/oh-my-pi"
+mkdir -p "$SANDBOX_HOME/work" "$SANDBOX_HOME/.agents" "$SANDBOX_HOME/.claude" "$SANDBOX_HOME/.codex" "$SANDBOX_HOME/.gemini" "$SANDBOX_HOME/.ddev" "$SANDBOX_HOME/.config/oh-my-pi"
 mkdir -p "$SANDBOX_HOME/.local/bin" "$SANDBOX_HOME/.local/lib"
 mkdir -p "$SANDBOX_HOME/.omp/plugins" "$SANDBOX_HOME/go/bin"
 printf 'selected config\n' > "$SANDBOX_HOME/.agents/config"
@@ -123,6 +123,37 @@ for ((index = 0; index + 2 < ${#captured_args[@]}; index++)); do
         fail 'launcher still exposes the host root mount'
     fi
 done
+require_no_destination /var/run/docker.sock
+if [[ -S /var/run/docker.sock ]]; then
+    (
+        cd -- "$SANDBOX_HOME/work"
+        BWRAP_CAPTURE="$capture" HOME="$SANDBOX_HOME" PATH="$fake_bin:/usr/bin:/bin" \
+            env -u BWRAP_HOME_RO -u BWRAP_HOME_RW -u BWRAP_MISE -u BWRAP_FOLLOW_SYMLINKS \
+            -u BWRAP_DOCKER_SOCKET "$LAUNCHER" --docker-socket -- true
+    )
+    mapfile -d '' -t captured_args < "$capture"
+    require_triplet --bind /var/run/docker.sock /var/run/docker.sock
+    (
+        cd -- "$SANDBOX_HOME/work"
+        BWRAP_CAPTURE="$capture" HOME="$SANDBOX_HOME" PATH="$fake_bin:/usr/bin:/bin" \
+            BWRAP_DOCKER_SOCKET=1 "$LAUNCHER" -- true
+    )
+    mapfile -d '' -t captured_args < "$capture"
+    require_triplet --bind /var/run/docker.sock /var/run/docker.sock
+else
+    if (
+        cd -- "$SANDBOX_HOME/work"
+        HOME="$SANDBOX_HOME" PATH="$fake_bin:/usr/bin:/bin" \
+            env -u BWRAP_HOME_RO -u BWRAP_HOME_RW -u BWRAP_MISE -u BWRAP_FOLLOW_SYMLINKS \
+            -u BWRAP_DOCKER_SOCKET "$LAUNCHER" --docker-socket -- true \
+            > /dev/null 2> "$TEST_ROOT/docker-socket-error"
+    ); then
+        fail 'docker-socket mode accepted a missing Docker socket'
+    fi
+    docker_socket_error=$(<"$TEST_ROOT/docker-socket-error")
+    [[ $docker_socket_error == *'Docker socket not found'* ]] || \
+        fail 'missing Docker socket error was not actionable'
+fi
 (
     cd -- "$SANDBOX_HOME/work"
     CLI_SECRET=visible OTHER_SECRET=hidden BWRAP_CAPTURE="$capture" HOME="$SANDBOX_HOME" MISE_DATA_DIR="$mise_data" \
@@ -305,7 +336,7 @@ mkdir -p "$TEST_ROOT/wrapper-work"
         env -u BWRAP_HOME_RO -u BWRAP_HOME_RW "$WRAPPER"
 )
 mapfile -d '' -t captured_args < "$capture"
-for home_path in "$SANDBOX_HOME/.agents" "$SANDBOX_HOME/.claude" "$SANDBOX_HOME/.codex" "$SANDBOX_HOME/.gemini" "$SANDBOX_HOME/.local/bin" "$SANDBOX_HOME/.omp" "$SANDBOX_HOME/.omp/plugins"; do
+for home_path in "$SANDBOX_HOME/.agents" "$SANDBOX_HOME/.ddev" "$SANDBOX_HOME/.local/bin" "$SANDBOX_HOME/.omp" "$SANDBOX_HOME/.omp/plugins"; do
     require_destination "$home_path"
 done
 require_no_destination "$SANDBOX_HOME/go/bin"

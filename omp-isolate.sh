@@ -26,6 +26,8 @@ It prompts before each run when external project symlinks are present. Use
 bwrap-isolate.sh directly when hard-link and symlink protections matter.
 The active read-only directories are listed in the `home_ro_paths` array below;
 uncomment optional paths there only when the tool is installed and needed.
+Set BWRAP_DOCKER_SOCKET=1 to expose the host Docker API socket. This grants
+root-equivalent control of the Docker host and is disabled by default.
 Set BWRAP_HOME_RW before invoking this wrapper to override the writable config
 path.
 EOF
@@ -48,6 +50,7 @@ export BWRAP_HOME_RW=${BWRAP_HOME_RW:-"$HOME/.omp"}
 # BWRAP_HOME_RW. Uncomment additional directories when their tools are used.
 home_ro_paths=(
     "$HOME/.agents"
+    "$HOME/.ddev"
     "$HOME/.local/bin"
     "$HOME/.cargo/bin"
     "$HOME/.bun/bin"
@@ -84,4 +87,4 @@ for path in "${home_ro_paths[@]}"; do
 done
 export BWRAP_HOME_RO=${BWRAP_HOME_RO:-"$home_ro_value"}
 
-exec "$LAUNCHER" --allow-hardlinks --follow-symlinks -- omp "$@"
+exec "$LAUNCHER" --docker-socket --allow-hardlinks --follow-symlinks -- omp "$@"

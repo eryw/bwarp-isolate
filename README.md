@@ -94,6 +94,28 @@ Override the wrapper's writable Oh My Pi directory when needed:
 BWRAP_HOME_RW="$HOME/.omp-work" ./omp-isolate.sh
 ```
 
+## Docker API access
+
+The launcher makes standard Docker executables available through the read-only `/usr/bin` runtime mount, but it hides `/var/run/docker.sock` by default. Docker commands therefore cannot reach the host daemon unless socket access is explicitly enabled.
+
+Enable Docker access for the convenience wrapper:
+
+```sh
+BWRAP_DOCKER_SOCKET=1 omp-isolate.sh
+```
+
+Or run Docker directly through the minimal launcher:
+
+```sh
+./bwrap-isolate.sh --docker-socket -- docker ps
+```
+
+The opt-in mounts the host Docker socket at `/var/run/docker.sock`. The option is disabled by default because Docker socket access grants effectively root-level control of the Docker host: a command with access can create privileged containers, mount arbitrary host paths, and control the daemon.
+
+Docker configuration and credentials under `~/.docker` are not exposed automatically. If a command needs them, add the directory explicitly through `BWRAP_HOME_RO`, and review its contents first because it may contain registry credentials.
+
+For the strongest isolation, keep Docker administration outside the sandbox and use the sandbox only for project commands that do not need daemon access.
+
 ## Launcher options
 
 ```text
@@ -101,6 +123,7 @@ BWRAP_HOME_RW="$HOME/.omp-work" ./omp-isolate.sh
 --home-rw PATHS         Set BWRAP_HOME_RW (colon-separated absolute paths).
 --mise                  Set BWRAP_MISE=1.
 --passthrough-env NAMES Set BWRAP_PASSTHROUGH_ENV (colon-separated names).
+--docker-socket         Expose /var/run/docker.sock to the command.
 --allow-hardlinks       Disable hard-link boundary validation.
 --follow-symlinks       Show external symlink targets and ask before mounting them writable.
 --mount-root-ro         Expose the host root filesystem read-only.
@@ -199,6 +222,7 @@ The environment variables and their CLI equivalents are:
 - `BWRAP_HOME_RW` → `--home-rw PATHS`
 - `BWRAP_MISE=1` → `--mise`
 - `BWRAP_PASSTHROUGH_ENV` → `--passthrough-env NAMES`
+- `BWRAP_DOCKER_SOCKET=1` → `--docker-socket`
 - `BWRAP_ALLOW_HARDLINKS=1` → `--allow-hardlinks`
 - `BWRAP_FOLLOW_SYMLINKS=1` → `--follow-symlinks`
 - `BWRAP_MOUNT_ROOT_RO=1` → `--mount-root-ro`

@@ -22,6 +22,7 @@ Usage:
   --mise                Set BWRAP_MISE=1.
   --passthrough-env NAMES
                         Set BWRAP_PASSTHROUGH_ENV (colon-separated names).
+  --docker-socket       Expose /var/run/docker.sock to the command.
   --allow-hardlinks     Disable hard-link boundary validation.
   --follow-symlinks     List and confirm every resolved external symlink target;
                         mount approved targets writable.
@@ -52,16 +53,19 @@ Configuration (colon-separated absolute paths under HOME):
                       take precedence over an identical BWRAP_HOME_RO path.
   BWRAP_MISE          Set to 1 to expose mise's data directory and shims
                       read-only, and prepend the shims to PATH.
+  BWRAP_PASSTHROUGH_ENV
+                      Additional environment variable names to copy into the
+                      sandbox, for example:
+                      BWRAP_PASSTHROUGH_ENV=OPENAI_API_KEY:TERM
+  BWRAP_DOCKER_SOCKET Set to 1 to expose /var/run/docker.sock. This grants
+                      the command Docker API access and effectively root-level
+                      control of the Docker host.
   BWRAP_ALLOW_HARDLINKS
                       Set to 1 as an alternative to --allow-hardlinks.
   BWRAP_FOLLOW_SYMLINKS
                       Set to 1 as an alternative to --follow-symlinks.
   BWRAP_MOUNT_ROOT_RO
                       Set to 1 as an alternative to --mount-root-ro.
-  BWRAP_PASSTHROUGH_ENV
-                      Additional environment variable names to copy into the
-                      sandbox, for example:
-                      BWRAP_PASSTHROUGH_ENV=OPENAI_API_KEY:TERM
 
 Examples:
   BWRAP_HOME_RW="$HOME/.omp" \
@@ -70,6 +74,7 @@ Examples:
     ./bwrap-isolate.sh -- omp --help
 BWRAP_MISE=1 ./bwrap-isolate.sh -- node --version
 ./bwrap-isolate.sh --mount-root-ro -- sh -c 'cat /etc/os-release'
+BWRAP_DOCKER_SOCKET=1 ./bwrap-isolate.sh -- ddev describe
 
 Security notes:
   - The sandbox does not mount the host root by default; only listed runtime
@@ -77,6 +82,8 @@ Security notes:
   - --mount-root-ro is opt-in and exposes the host root filesystem read-only.
     Explicit writable mounts, including the current directory and BWRAP_HOME_RW,
     remain writable. It does not make the root filesystem writable by itself.
+  - --docker-socket is intentionally unsafe: Docker API access is equivalent
+    to root-level control of the Docker host. Use only with trusted projects.
   - --follow-symlinks is intentionally unsafe: before execution, every
     resolved external target is displayed as `link -> target` and requires
     interactive confirmation before it is mounted writable. A project symlink
@@ -119,6 +126,7 @@ EOF
 allow_hardlinks=false
 follow_symlinks=false
 mount_root_ro=false
+docker_socket=false
 while (( $# > 0 )); do
     case $1 in
         --home-ro)
@@ -150,6 +158,10 @@ while (( $# > 0 )); do
             ;;
         --passthrough-env=*)
             export BWRAP_PASSTHROUGH_ENV=${1#*=}
+            shift
+            ;;
+        --docker-socket)
+            docker_socket=true
             shift
             ;;
         --allow-hardlinks)
@@ -190,6 +202,11 @@ esac
 case ${BWRAP_MOUNT_ROOT_RO:-0} in
     1|true) mount_root_ro=true ;;
 esac
+case ${BWRAP_DOCKER_SOCKET:-0} in
+    1|true) docker_socket=true ;;
+    0|"") ;;
+    *) fail 'BWRAP_DOCKER_SOCKET must be 1, true, or unset' ;;
+esac
 if [[ $allow_hardlinks == true ]]; then
     printf '%s: WARNING: hard-link validation disabled\n' "$SCRIPT_NAME" >&2
 fi
@@ -199,11 +216,18 @@ fi
 if [[ $mount_root_ro == true ]]; then
     printf '%s: WARNING: mounting the host root read-only\n' "$SCRIPT_NAME" >&2
 fi
+if [[ $docker_socket == true ]]; then
+    printf '%s: WARNING: exposing /var/run/docker.sock grants Docker host control\n' \
+        "$SCRIPT_NAME" >&2
+fi
 
 (( $# > 0 )) || { usage; fail 'a command is required'; }
 
 command -v bwrap >/dev/null 2>&1 || fail 'bwrap is not installed or not in PATH'
 command -v realpath >/dev/null 2>&1 || fail 'realpath is required'
+if [[ $docker_socket == true && ! -S /var/run/docker.sock ]]; then
+    fail 'Docker socket not found: /var/run/docker.sock'
+fi
 
 HOME=${HOME:?HOME is not set}
 HOME=$(realpath -e -- "$HOME") || fail "cannot resolve HOME: $HOME"
@@ -244,6 +268,9 @@ bwrap_args+=(
     --tmpfs /tmp
     --tmpfs /run
 )
+if [[ $docker_socket == true ]]; then
+    bwrap_args+=(--bind /var/run/docker.sock /var/run/docker.sock)
+fi
 
 add_runtime_ro_bind() {
     local path=$1 resolved_path
