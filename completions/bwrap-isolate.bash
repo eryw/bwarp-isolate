@@ -13,7 +13,7 @@ _bwrap_isolate_complete() {
     done
 
     case $previous in
-        --home-ro|--home-rw)
+        --bind-ro|--bind-rw)
             COMPREPLY=( $(compgen -d -- "$current") )
             return 0
             ;;
@@ -24,8 +24,8 @@ _bwrap_isolate_complete() {
     esac
 
     options=(
-        --home-ro
-        --home-rw
+        --bind-ro
+        --bind-rw
         --mise
         --passthrough-env
         --allow-hardlinks

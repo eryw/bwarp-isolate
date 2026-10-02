@@ -3,10 +3,10 @@
 # runtime mounts and a writable current directory.
 #
 # Persistent host writes are limited to the directory where this script is
-# started plus any paths explicitly listed in BWRAP_HOME_RW. HOME is replaced
-# with an empty tmpfs; only selected paths are mounted back. Network access is
-# intentionally preserved for coding agents. Environment variables are cleared
-# unless explicitly allowlisted.
+# started plus directories explicitly listed with --bind-rw. HOME is replaced
+# with an empty tmpfs; only explicitly bound paths are mounted back.
+# Network access is intentionally preserved for coding agents. Environment variables
+# are cleared unless explicitly allowlisted.
 
 set -Eeuo pipefail
 
@@ -17,11 +17,9 @@ usage() {
 Usage:
   bwrap-isolate.sh [OPTIONS] [--] COMMAND [ARG ...]
 
-  --home-ro PATHS       Set BWRAP_HOME_RO (colon-separated absolute paths).
-  --home-rw PATHS       Set BWRAP_HOME_RW (colon-separated absolute paths).
+  --bind-ro PATH        Bind an existing directory read-only (repeatable).
+  --bind-rw PATH        Bind an existing directory read-write (repeatable).
   --mise                Set BWRAP_MISE=1.
-  --passthrough-env NAMES
-                        Set BWRAP_PASSTHROUGH_ENV (colon-separated names).
   --docker-socket       Expose /var/run/docker.sock to the command.
   --allow-hardlinks     Disable hard-link boundary validation.
   --follow-symlinks     List and confirm every resolved external symlink target;
@@ -38,19 +36,17 @@ Defaults:
   - current directory: writable and persistent
   - root filesystem: empty except for explicit runtime mounts
   - system executables, libraries, Python packages, and common data: readable
-  - HOME: empty, except selected paths
-  - selected non-mise user tool directories: readable
+  - HOME: empty except for read-only ~/.local/bin and explicitly bound directories
+  - unrelated host directories: hidden unless explicitly bound
   - /tmp and /run: private temporary filesystems
   - network: available
   - environment: cleared, with locale/terminal variables restored
   - user namespaces: required; nested user namespaces disabled
-
-Configuration (colon-separated absolute paths under HOME):
-  BWRAP_HOME_RO       Read-only home paths. If unset, defaults to:
-                      ~/.local/bin
-  BWRAP_HOME_RW       Existing home directories to expose writable. Empty by
-                      default. These paths persist changes to the host and
-                      take precedence over an identical BWRAP_HOME_RO path.
+Options and environment settings:
+  --bind-ro PATH      Mount an existing directory at its resolved absolute
+                      path in the sandbox, read-only. Repeat for more paths.
+  --bind-rw PATH      Like --bind-ro, but writable and persistent. Writable
+                      paths are subject to hard-link validation.
   BWRAP_MISE          Set to 1 to expose mise's data directory and shims
                       read-only, and prepend the shims to PATH.
   BWRAP_PASSTHROUGH_ENV
@@ -68,19 +64,18 @@ Configuration (colon-separated absolute paths under HOME):
                       Set to 1 as an alternative to --mount-root-ro.
 
 Examples:
-  BWRAP_HOME_RW="$HOME/.omp" \
-  BWRAP_HOME_RO="$HOME/.agents" \
-    BWRAP_PASSTHROUGH_ENV=ANTHROPIC_API_KEY \
-    ./bwrap-isolate.sh -- omp --help
+  ./bwrap-isolate.sh --bind-ro "$HOME/.agents" --bind-rw "$HOME/.omp" -- omp --help
+  BWRAP_PASSTHROUGH_ENV=ANTHROPIC_API_KEY \
+    ./bwrap-isolate.sh --bind-ro "$HOME/.agents" -- omp --help
 BWRAP_MISE=1 ./bwrap-isolate.sh -- node --version
 ./bwrap-isolate.sh --mount-root-ro -- sh -c 'cat /etc/os-release'
 BWRAP_DOCKER_SOCKET=1 ./bwrap-isolate.sh -- ddev describe
 
 Security notes:
   - The sandbox does not mount the host root by default; only listed runtime
-    paths are visible. Do not add broad paths such as HOME itself to BWRAP_HOME_RO.
+    paths are visible. Bind only the exact directories a command needs.
   - --mount-root-ro is opt-in and exposes the host root filesystem read-only.
-    Explicit writable mounts, including the current directory and BWRAP_HOME_RW,
+    Explicit writable mounts, including the current directory and --bind-rw,
     remain writable. It does not make the root filesystem writable by itself.
   - --docker-socket is intentionally unsafe: Docker API access is equivalent
     to root-level control of the Docker host. Use only with trusted projects.
@@ -90,7 +85,7 @@ Security notes:
     to `/` can therefore expose the host filesystem to the invoking user's
     existing permissions. Use only with trusted projects.
   - Network access and explicitly passed secrets remain available by design.
-  - The launcher rejects work directories and writable HOME mounts containing
+  - The launcher rejects work directories and writable bind mounts containing
     hard-linked regular files; move or copy such files before retrying.
   - This is OS-level process isolation, not a VM. Do not treat it as a defense
     against a compromised kernel, bubblewrap, or privileged host services.
@@ -117,7 +112,7 @@ Common package-manager fixes:
         package-import-method=copy
 
 Keep package caches in the current project directory or explicitly expose a
-trusted cache directory with BWRAP_HOME_RW. You do not need to change package
+trusted cache directory with --bind-rw. You do not need to change package
 managers.
 EOF
     exit 64
@@ -127,24 +122,26 @@ allow_hardlinks=false
 follow_symlinks=false
 mount_root_ro=false
 docker_socket=false
+declare -a additional_ro_requested=()
+declare -a additional_rw_requested=()
 while (( $# > 0 )); do
     case $1 in
-        --home-ro)
-            (( $# >= 2 )) || fail '--home-ro requires a value'
-            export BWRAP_HOME_RO=$2
+        --bind-ro)
+            (( $# >= 2 )) || fail '--bind-ro requires a path'
+            additional_ro_requested+=("$2")
             shift 2
             ;;
-        --home-ro=*)
-            export BWRAP_HOME_RO=${1#*=}
+        --bind-ro=*)
+            additional_ro_requested+=("${1#*=}")
             shift
             ;;
-        --home-rw)
-            (( $# >= 2 )) || fail '--home-rw requires a value'
-            export BWRAP_HOME_RW=$2
+        --bind-rw)
+            (( $# >= 2 )) || fail '--bind-rw requires a path'
+            additional_rw_requested+=("$2")
             shift 2
             ;;
-        --home-rw=*)
-            export BWRAP_HOME_RW=${1#*=}
+        --bind-rw=*)
+            additional_rw_requested+=("${1#*=}")
             shift
             ;;
         --mise)
@@ -302,21 +299,8 @@ for runtime_path in "${runtime_ro_paths[@]}"; do
     add_runtime_ro_bind "$runtime_path"
 done
 
-# Validate selected host paths before hiding HOME. Bubblewrap resolves bind
-# sources from the host mount namespace, so they remain available as sources
-# after the sandbox HOME is masked.
-declare -a home_ro_paths=()
-if [[ -v BWRAP_HOME_RO ]]; then
-    IFS=: read -r -a home_ro_paths <<< "$BWRAP_HOME_RO"
-else
-    home_ro_paths=(
-        "$HOME/.local/bin"
-    )
-fi
-declare -a home_rw_paths=()
-if [[ -v BWRAP_HOME_RW && -n $BWRAP_HOME_RW ]]; then
-    IFS=: read -r -a home_rw_paths <<< "$BWRAP_HOME_RW"
-fi
+# Resolve requested binds before masking HOME. Keep the standard user bin
+# available read-only by default without exposing the rest of HOME.
 mise_enabled=false
 mise_data_dir=
 case ${BWRAP_MISE:-0} in
@@ -330,7 +314,8 @@ case ${BWRAP_MISE:-0} in
             fail "mise data directory must be under HOME: $mise_data_dir"
         [[ -d "$mise_data_dir/shims" ]] || \
             fail "mise shims directory does not exist: $mise_data_dir/shims"
-        home_ro_paths+=("$mise_data_dir" "$HOME/.config/mise")
+        additional_ro_requested+=("$mise_data_dir")
+        [[ ! -d $HOME/.config/mise ]] || additional_ro_requested+=("$HOME/.config/mise")
         ;;
     0|"")
         ;;
@@ -338,53 +323,70 @@ case ${BWRAP_MISE:-0} in
         fail "BWRAP_MISE must be 1, true, or unset"
         ;;
 esac
-
-resolve_home_dirs() {
+declare -a resolved_additional_ro=()
+declare -a resolved_additional_rw=()
+resolve_additional_dirs() {
     local requested_path resolved_path
-    local required=$2
     local -n output_paths=$1
-    shift 2
+    shift
     for requested_path in "$@"; do
-        [[ -n $requested_path ]] || continue
-        [[ $requested_path == /* ]] || fail "HOME mount path is not absolute: $requested_path"
-
-        if ! resolved_path=$(realpath -e -- "$requested_path" 2>/dev/null); then
-            [[ $required == true ]] || continue
-            fail "HOME mount path does not exist: $requested_path"
-        fi
-        [[ $resolved_path != "$HOME" && $resolved_path == "$HOME/"* ]] || \
-            fail "HOME mount path must resolve strictly below HOME: $requested_path"
-        [[ -d $resolved_path ]] || fail "HOME mount path must be a directory: $requested_path"
+        [[ -n $requested_path ]] || fail 'additional bind path must not be empty'
+        resolved_path=$(realpath -e -- "$requested_path" 2>/dev/null) || \
+            fail "additional bind path does not exist: $requested_path"
+        [[ -d $resolved_path ]] || fail "additional bind path must be a directory: $requested_path"
+        [[ $resolved_path != / && $resolved_path != /tmp && $resolved_path != /run ]] || \
+            fail "refusing special additional bind path: $resolved_path"
         output_paths+=("$resolved_path")
     done
 }
+resolve_additional_dirs resolved_additional_ro "${additional_ro_requested[@]}"
+resolve_additional_dirs resolved_additional_rw "${additional_rw_requested[@]}"
 
-declare -a resolved_home_ro_paths=()
-declare -a resolved_home_rw_paths=()
-resolve_home_dirs resolved_home_ro_paths false "${home_ro_paths[@]}"
-resolve_home_dirs resolved_home_rw_paths true "${home_rw_paths[@]}"
+# Keep the standard user executable directory available without exposing the
+# rest of HOME; an explicit bind option can replace this default permission.
+if [[ -d $HOME/.local/bin ]]; then
+    default_local_bin=$(realpath -e -- "$HOME/.local/bin") || \
+        fail "cannot resolve default read-only path: $HOME/.local/bin"
+    default_local_bin_is_bound=false
+    for bind_path in "${resolved_additional_ro[@]}" "${resolved_additional_rw[@]}"; do
+        [[ $bind_path == "$default_local_bin" ]] && default_local_bin_is_bound=true
+    done
+    [[ $default_local_bin_is_bound == true ]] || resolved_additional_ro+=("$default_local_bin")
+fi
 
-for writable_path in "${resolved_home_rw_paths[@]}"; do
-    for readonly_path in "${resolved_home_ro_paths[@]}"; do
-        [[ $writable_path == "$readonly_path" ]] && continue
+check_disjoint_mounts() {
+    local path=$1 other=$2
+    [[ $path == "$other" ]] && fail "overlapping bind paths: $path and $other"
+    case "$path" in "$other"/*) fail "overlapping bind paths: $path and $other" ;; esac
+    case "$other" in "$path"/*) fail "overlapping bind paths: $path and $other" ;; esac
+}
+for additional_path in "${resolved_additional_ro[@]}" "${resolved_additional_rw[@]}"; do
+    check_disjoint_mounts "$additional_path" "$WORKDIR"
+    [[ $additional_path != "$HOME" ]] || fail "bind path must not be HOME: $HOME"
+    case "$HOME" in
+        "$additional_path"/*)
+            fail "bind path must not contain HOME: $additional_path"
+            ;;
+    esac
+done
+for ((i = 0; i < ${#resolved_additional_ro[@]}; i++)); do
+    for ((j = i + 1; j < ${#resolved_additional_ro[@]}; j++)); do
+        check_disjoint_mounts "${resolved_additional_ro[i]}" "${resolved_additional_ro[j]}"
+    done
+done
+for ((i = 0; i < ${#resolved_additional_rw[@]}; i++)); do
+    for ((j = i + 1; j < ${#resolved_additional_rw[@]}; j++)); do
+        check_disjoint_mounts "${resolved_additional_rw[i]}" "${resolved_additional_rw[j]}"
+    done
+done
+for readonly_path in "${resolved_additional_ro[@]}"; do
+    for writable_path in "${resolved_additional_rw[@]}"; do
         case "$writable_path" in
-            "$readonly_path"/*)
-                fail "read-only HOME path contains writable path: $writable_path"
+            "$readonly_path"|"$readonly_path"/*)
+                fail "writable bind path overlaps read-only bind path: $writable_path"
                 ;;
         esac
     done
-done
-for readonly_path in "${resolved_home_ro_paths[@]}"; do
-    case "$WORKDIR" in
-        "$readonly_path"|"$readonly_path"/*)
-            fail "working directory is inside read-only HOME path: $readonly_path"
-            ;;
-    esac
-    case "$readonly_path" in
-        "$WORKDIR"|"$WORKDIR"/*)
-            fail "read-only HOME path is inside working directory: $readonly_path"
-            ;;
-    esac
 done
 
 declare -A writable_inode_counts=()
@@ -422,8 +424,8 @@ collect_writable_inodes() {
 
 if [[ $allow_hardlinks != true ]]; then
     collect_writable_inodes "$WORKDIR"
-    for writable_path in "${resolved_home_rw_paths[@]}"; do
-        collect_writable_inodes "$writable_path" "${resolved_home_ro_paths[@]}"
+    for writable_path in "${resolved_additional_rw[@]}"; do
+        collect_writable_inodes "$writable_path" "${resolved_additional_ro[@]}"
     done
     for inode in "${!writable_inode_counts[@]}"; do
         if (( writable_inode_counts[$inode] < writable_inode_links[$inode] )); then
@@ -479,27 +481,21 @@ fi
 
 
 
-# Bubblewrap creates missing destination parents for bind operations. Mount
-# HOME after validating all sources so the host HOME itself remains hidden.
+# Bubblewrap creates missing destination parents for bind operations. Mask
+# HOME after resolving all source paths so its unrelated contents stay hidden.
 bwrap_args+=(--tmpfs "$HOME")
 
-for target in "${resolved_home_rw_paths[@]}"; do
+# Read-only binds follow writable binds so nested protected directories remain
+# read-only when they are inside an explicitly writable directory.
+for target in "${resolved_additional_rw[@]}"; do
     bwrap_args+=(--bind "$target" "$target")
 done
 
-
-
-# Read-only mounts are applied after writable roots so selected protected
-# subtrees can safely remain read-only inside a writable config directory.
-for target in "${resolved_home_ro_paths[@]}"; do
-    for writable_path in "${resolved_home_rw_paths[@]}"; do
-        [[ $target == "$writable_path" ]] && continue 2
-    done
+for target in "${resolved_additional_ro[@]}"; do
     bwrap_args+=(--ro-bind "$target" "$target")
 done
 
-# Approved symlink targets come last so confirmation always grants the
-# requested writable mount, including targets nested under a read-only HOME path.
+# Confirmed symlink targets come last and grant writable access explicitly.
 for target in "${symlink_targets[@]}"; do
     bwrap_args+=(--bind "$target" "$target")
 done

@@ -2,8 +2,8 @@
 
 _bwrap_isolate() {
     _arguments -s \
-        '--home-ro[read-only HOME paths]:paths:_files -/' \
-        '--home-rw[writable HOME paths]:paths:_files -/' \
+        '--bind-ro[bind an additional directory read-only]:path:_files -/' \
+        '--bind-rw[bind an additional directory read-write]:path:_files -/' \
         '--mise[enable mise support]' \
         '--passthrough-env[environment variable names]:names:' \
         '--allow-hardlinks[disable hard-link validation]' \

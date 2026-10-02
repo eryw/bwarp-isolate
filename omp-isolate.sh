@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Convenience wrapper for running Oh My Pi with the permissive agent sandbox.
 # Equivalent to:
-#   BWRAP_MISE=1 BWRAP_HOME_RW="$HOME/.omp" \
-#   bwrap-isolate.sh --allow-hardlinks --follow-symlinks -- omp
+#   bwrap-isolate.sh --allow-hardlinks --follow-symlinks \
+#     --bind-rw "$HOME/.omp" --bind-ro "$HOME/.agents" -- omp
 
 set -Eeuo pipefail
 
@@ -12,24 +12,26 @@ LAUNCHER="$SCRIPT_DIR/bwrap-isolate.sh"
 usage() {
     cat >&2 <<'EOF'
 Usage:
-  omp-isolate.sh [OMP ARG ...]
+  omp-isolate.sh [MOUNT OPTION ...] [OMP ARG ...]
   omp-isolate.sh --wrapper-help
 
+  --bind-ro PATH  Expose an additional existing directory read-only.
+  --bind-rw PATH  Expose an additional existing directory read-write.
+
 Runs `omp` through bwrap-isolate.sh with:
-  BWRAP_MISE=1
-  BWRAP_HOME_RW="$HOME/.omp"
+  --bind-rw "$HOME/.omp"
   --allow-hardlinks
   --follow-symlinks (lists targets and requires confirmation before mounting)
 
 This convenience wrapper intentionally provides a weaker filesystem boundary.
 It prompts before each run when external project symlinks are present. Use
 bwrap-isolate.sh directly when hard-link and symlink protections matter.
-The active read-only directories are listed in the `home_ro_paths` array below;
+Additional directory options are passed to bwrap-isolate.sh before `omp`.
+The active read-only directories are listed in the `readonly_bind_paths` array;
 uncomment optional paths there only when the tool is installed and needed.
 Set BWRAP_DOCKER_SOCKET=1 to expose the host Docker API socket. This grants
 root-equivalent control of the Docker host and is disabled by default.
-Set BWRAP_HOME_RW before invoking this wrapper to override the writable config
-path.
+
 EOF
 }
 
@@ -42,21 +44,40 @@ fi
     printf '%s: launcher is not executable: %s\n' "${0##*/}" "$LAUNCHER" >&2
     exit 64
 }
+declare -a additional_mount_args=()
+while (( $# > 0 )); do
+    case $1 in
+        --bind-ro|--bind-rw)
+            (( $# >= 2 )) || {
+                printf '%s: %s requires a path\n' "${0##*/}" "$1" >&2
+                exit 64
+            }
+            additional_mount_args+=("$1" "$2")
+            shift 2
+            ;;
+        --bind-ro=*|--bind-rw=*)
+            additional_mount_args+=("$1")
+            shift
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 export BWRAP_MISE=1
-export BWRAP_HOME_RW=${BWRAP_HOME_RW:-"$HOME/.omp"}
 
-# Convenience profile: keep the active list limited to directories used by
-# this machine. Every path is still mounted read-only unless it is also in
-# BWRAP_HOME_RW. Uncomment additional directories when their tools are used.
-home_ro_paths=(
+# Convenience profile: only existing selected paths are mounted read-only.
+readonly_bind_paths=(
     "$HOME/.agents"
     "$HOME/.ddev"
-    "$HOME/.local/bin"
     "$HOME/.cargo/bin"
     "$HOME/.bun/bin"
     "$HOME/.config/composer/vendor/bin"
     "$HOME/.local/share/pnpm/bin"
-    "$HOME/.omp"
     "$HOME/.omp/plugins"
 
     # Common optional language/tool directories:
@@ -81,10 +102,12 @@ home_ro_paths=(
     # "$HOME/.pub-cache/bin"
     # "$HOME/.mix/escripts"
 )
-home_ro_value=
-for path in "${home_ro_paths[@]}"; do
-    home_ro_value+="${home_ro_value:+:}$path"
+declare -a profile_ro_args=()
+for path in "${readonly_bind_paths[@]}"; do
+    [[ -d $path ]] || continue
+    profile_ro_args+=(--bind-ro "$path")
 done
-export BWRAP_HOME_RO=${BWRAP_HOME_RO:-"$home_ro_value"}
 
-exec "$LAUNCHER" --docker-socket --allow-hardlinks --follow-symlinks -- omp "$@"
+exec "$LAUNCHER" --docker-socket --allow-hardlinks --follow-symlinks \
+    --bind-rw "$HOME/.omp" "${profile_ro_args[@]}" \
+    "${additional_mount_args[@]}" -- omp "$@"

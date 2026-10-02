@@ -74,7 +74,15 @@ Use the minimal launcher directly when the command only needs the current projec
 
 The `--` separates launcher options from the command. Arguments after the command are passed through unchanged.
 
-Changes made in the current directory persist on the host. Other host files are not writable unless explicitly exposed through `BWRAP_HOME_RW` or an approved external symlink.
+Bind another project or shared data directory at its resolved absolute path:
+
+```sh
+./bwrap-isolate.sh --bind-ro ../shared-library --bind-rw ../generated-data -- command
+```
+
+Use repeatable `--bind-ro PATH` or `--bind-rw PATH` options. Both require existing directories; relative paths resolve from the directory where the launcher is started. Read-write mounts persist changes and are checked for hard-linked files unless hard-link validation is explicitly disabled. Conflicting binds are rejected; a read-only subtree may be nested under a read-write bind.
+
+Changes made in the current directory persist on the host. Other host files are not writable unless explicitly exposed through `--bind-rw` or an approved external symlink.
 
 ## Oh My Pi wrapper
 
@@ -88,11 +96,15 @@ cd /path/to/my-project
 
 The wrapper deliberately uses weaker boundary settings for compatibility. Use `bwrap-isolate.sh` directly when hard-link validation and stricter control are important.
 
-Override the wrapper's writable Oh My Pi directory when needed:
+Pass additional paths to the wrapper before the `omp` arguments:
 
 ```sh
-BWRAP_HOME_RW="$HOME/.omp-work" ./omp-isolate.sh
+./omp-isolate.sh --bind-ro ../shared-library --bind-rw ../generated-data -- --help
 ```
+
+The wrapper forwards these mount options to `bwrap-isolate.sh`; read-write paths persist to the host.
+
+To use a different Oh My Pi configuration directory, invoke the launcher directly with the desired `--bind-rw PATH`.
 
 ## Docker API access
 
@@ -112,15 +124,15 @@ Or run Docker directly through the minimal launcher:
 
 The opt-in mounts the host Docker socket at `/var/run/docker.sock`. The option is disabled by default because Docker socket access grants effectively root-level control of the Docker host: a command with access can create privileged containers, mount arbitrary host paths, and control the daemon.
 
-Docker configuration and credentials under `~/.docker` are not exposed automatically. If a command needs them, add the directory explicitly through `BWRAP_HOME_RO`, and review its contents first because it may contain registry credentials.
+Docker configuration and credentials under `~/.docker` are not exposed automatically. If a command needs them, bind the directory read-only explicitly and review its contents first because it may contain registry credentials.
 
 For the strongest isolation, keep Docker administration outside the sandbox and use the sandbox only for project commands that do not need daemon access.
 
 ## Launcher options
 
 ```text
---home-ro PATHS         Set BWRAP_HOME_RO (colon-separated absolute paths).
---home-rw PATHS         Set BWRAP_HOME_RW (colon-separated absolute paths).
+--bind-ro PATH          Bind an additional existing directory read-only (repeatable).
+--bind-rw PATH          Bind an additional existing directory read-write (repeatable).
 --mise                  Set BWRAP_MISE=1.
 --passthrough-env NAMES Set BWRAP_PASSTHROUGH_ENV (colon-separated names).
 --docker-socket         Expose /var/run/docker.sock to the command.
@@ -130,70 +142,25 @@ For the strongest isolation, keep Docker administration outside the sandbox and 
 --help                  Show help.
 ```
 
-The CLI settings override their corresponding environment variables. Options
-must appear before `--` and the command; arguments after `--` are passed to the
-command unchanged.
-
-The value forms with `=` are also accepted, for example:
+The launcher masks host `HOME` with an empty tmpfs. If it exists, `~/.local/bin` is mounted read-only by default; an explicit `--bind-rw ~/.local/bin` replaces that default. Other home directories and host paths are visible only when explicitly bound. Each bind path must exist and is mounted at its resolved absolute path; relative paths resolve from the launch directory.
 
 ```sh
-./bwrap-isolate.sh --home-ro="$HOME/.local/bin" --mise -- command
+./bwrap-isolate.sh \
+  --bind-ro "$HOME/.config/my-tool" \
+  --bind-rw "$HOME/.omp" \
+  --bind-ro ../shared-library \
+  -- command
 ```
 
-## Configuration
+Read-write binds persist changes to the host and undergo hard-link validation. A read-only bind may be nested inside a read-write bind; the read-only mount is applied last. Binds cannot overlap the working directory, HOME itself, or each other in conflicting ways. Avoid broad paths such as `/` or all of `HOME`.
 
-Configuration values are colon-separated absolute paths under `HOME`.
+`omp-isolate.sh` defines a convenience profile in `readonly_bind_paths`. It binds selected tool and agent directories read-only, `~/.omp` read-write, and `~/.omp/plugins` read-only. Missing optional read-only profile directories are skipped.
 
-### Read-only home paths
-
-`bwrap-isolate.sh` keeps its built-in profile intentionally small. If `BWRAP_HOME_RO` is unset, it exposes only:
-
-- `~/.local/bin`
-
-It does not automatically expose language-specific tool directories, agent state, or application configuration. Add only the paths a command requires through `BWRAP_HOME_RO`:
+For example, expose Docker credentials only to a command that needs them:
 
 ```sh
-BWRAP_HOME_RO="$HOME/.local/bin:$HOME/.cargo/bin" \
-  ./bwrap-isolate.sh -- cargo test
+./bwrap-isolate.sh --bind-ro "$HOME/.docker" -- docker ps
 ```
-
-Missing directories are ignored. Paths in `BWRAP_HOME_RO` are read-only. Use `BWRAP_HOME_RW` only for directories that the command must modify.
-
-### Convenience profile example
-
-`omp-isolate.sh` is the example of a project-specific convenience wrapper. It keeps the launcher minimal while defining a larger read-only profile for the tools and coding agents used by this setup:
-
-- `~/.agents`
-- `~/.claude` (Claude Code)
-- `~/.codex` (Codex)
-- `~/.gemini` (Gemini CLI)
-- `~/.local/bin`
-- `~/.cargo/bin`
-- `~/.bun/bin`
-- `~/.config/composer/vendor/bin`
-- `~/.local/share/pnpm/bin`
-- `~/.omp` and `~/.omp/plugins`
-
-The wrapper enables mise separately and makes `~/.omp` writable for Oh My Pi. Edit its `home_ro_paths` array for your own machine; unused language/tool directories are intentionally commented out there.
-
-To create another convenience wrapper, copy `omp-isolate.sh`, change its command and `home_ro_paths`, then keep the custom list limited to directories you actually use.
-Example:
-
-```sh
-BWRAP_HOME_RO="$HOME/.local/bin:$HOME/.config/my-tool" \
-  ./bwrap-isolate.sh -- my-tool
-```
-
-### Writable home paths
-
-`BWRAP_HOME_RW` exposes existing home directories as writable. Writes persist to the host, so expose only paths the command needs:
-
-```sh
-BWRAP_HOME_RW="$HOME/.omp" \
-  ./bwrap-isolate.sh -- omp
-```
-
-The launcher rejects paths outside `HOME`, missing directories, and conflicting read-only/writable mounts. Do not expose all of `HOME`.
 
 ### mise
 
@@ -218,8 +185,6 @@ Environment variable names are validated. Avoid passing secrets unless the comma
 
 The environment variables and their CLI equivalents are:
 
-- `BWRAP_HOME_RO` → `--home-ro PATHS`
-- `BWRAP_HOME_RW` → `--home-rw PATHS`
 - `BWRAP_MISE=1` → `--mise`
 - `BWRAP_PASSTHROUGH_ENV` → `--passthrough-env NAMES`
 - `BWRAP_DOCKER_SOCKET=1` → `--docker-socket`
@@ -243,8 +208,8 @@ A writable project directory is therefore an intentional exception: an agent can
 
 ## Safety notes
 
-- Do not run the launcher from `/`, `/tmp`, `/run`, or a directory containing `HOME`.
-- Do not set `BWRAP_HOME_RO` or `BWRAP_HOME_RW` to broad paths such as the whole home directory.
+- Do not bind broad paths such as all of `HOME`.
+- Review every `--bind-ro` and `--bind-rw` path: these options expose arbitrary host directories at their absolute paths inside the sandbox, and read-write changes persist on the host.
 - Treat `--follow-symlinks` as unsafe for untrusted projects. A symlink to `/` can expose the host filesystem with your existing permissions.
 - `--mount-root-ro` makes the host filesystem readable. It does not make explicitly writable mounts safe.
 - Secrets explicitly passed through the environment and data reachable over the network remain exposed.
@@ -277,9 +242,8 @@ fpath=("$HOME/.zsh/completions" $fpath)
 autoload -Uz compinit && compinit
 ```
 
-The completion definitions cover every launcher CLI option, including the
-options corresponding to `BWRAP_HOME_RO`, `BWRAP_HOME_RW`, `BWRAP_MISE`, and
-`BWRAP_PASSTHROUGH_ENV`.
+The completion definitions cover every launcher CLI option, including
+`--bind-ro` and `--bind-rw`.
 
 ## Tests
 
@@ -293,4 +257,4 @@ The tests use temporary directories and a fake `bwrap` binary to verify mount co
 
 ## Machine-specific paths
 
-The scripts contain no hard-coded personal home-directory paths. Host-specific locations are derived from `HOME`, `PWD`, `BWRAP_HOME_RO`, `BWRAP_HOME_RW`, and `MISE_DATA_DIR` at runtime.
+The scripts contain no hard-coded personal home-directory paths. Host-specific locations are derived from `HOME`, `PWD`, and `MISE_DATA_DIR` at runtime.
