@@ -30,8 +30,8 @@ bwrap-isolate.sh directly when hard-link and symlink protections matter.
 Additional file/directory bind options are passed to bwrap-isolate.sh before `omp`.
 The active read-only paths, including the Git config, attributes, and ignore files, are listed in `readonly_bind_paths`; missing paths are skipped.
 uncomment optional paths there only when the tool is installed and needed.
-Set BWRAP_DOCKER_SOCKET=1 to expose the host Docker API socket. This grants
-root-equivalent control of the Docker host and is disabled by default.
+This wrapper exposes the host Docker API socket on every run. This grants
+root-equivalent control of the Docker host; use bwrap-isolate.sh for default-deny.
 
 EOF
 }

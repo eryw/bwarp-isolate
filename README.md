@@ -86,7 +86,7 @@ Changes made in the current directory persist on the host. Other host files are 
 
 ## Oh My Pi wrapper
 
-`omp-isolate.sh` is a convenience wrapper for Oh My Pi. It enables mise support, exposes `~/.omp` as writable configuration, allows hard links, and asks for confirmation before mounting targets of external project symlinks:
+`omp-isolate.sh` is a convenience wrapper for Oh My Pi. It enables mise support, exposes `~/.omp` as writable configuration, exposes the host Docker socket on every run, allows hard links, and asks for confirmation before mounting targets of external project symlinks. Docker socket access grants effectively root-level control of the host.
 
 ```sh
 cd /path/to/my-project
@@ -126,7 +126,7 @@ cd /path/to/my-project
 /path/to/bwarp-isolate/claude-isolate.sh --wrapper-help
 ```
 
-The `~/.claude` directory and `~/.claude.json` file can contain Claude Code credentials and state; both are writable by the process. The wrapper refuses a symbolic link at `~/.claude.json` rather than creating or mounting an unexpected target. Review the project and trust the code before launching. The wrapper does not expose the Docker socket. Use `bwrap-isolate.sh` directly when hard-link validation and stricter control are important.
+The `~/.claude` directory and `~/.claude.json` file can contain Claude Code credentials and state; both are writable by the process. The wrapper refuses a symbolic link at `~/.claude.json` rather than creating or mounting an unexpected target. It also exposes the host Docker socket on every run, granting effectively root-level control of the host. Review the project and trust the code before launching. Use `bwrap-isolate.sh` directly for default-deny Docker access and stricter filesystem control.
 
 Pass extra bind paths before Claude Code arguments:
 
@@ -142,21 +142,15 @@ BWRAP_PASSTHROUGH_ENV=ANTHROPIC_API_KEY ./claude-isolate.sh
 
 ## Docker API access
 
-The launcher makes standard Docker executables available through the read-only `/usr/bin` runtime mount, but it hides `/var/run/docker.sock` by default. Docker commands therefore cannot reach the host daemon unless socket access is explicitly enabled.
+The base launcher hides `/var/run/docker.sock` by default. Both convenience wrappers (`omp-isolate.sh` and `claude-isolate.sh`) explicitly pass `--docker-socket`, so they expose the host socket on every run.
 
-Enable Docker access for the convenience wrapper:
-
-```sh
-BWRAP_DOCKER_SOCKET=1 omp-isolate.sh
-```
-
-Or run Docker directly through the minimal launcher:
+For the minimal launcher, enable Docker access explicitly:
 
 ```sh
 ./bwrap-isolate.sh --docker-socket -- docker ps
 ```
 
-The opt-in mounts the host Docker socket at `/var/run/docker.sock`. The option is disabled by default because Docker socket access grants effectively root-level control of the Docker host: a command with access can create privileged containers, mount arbitrary host paths, and control the daemon.
+Docker socket access grants effectively root-level control of the Docker host: a command with access can create privileged containers, mount arbitrary host paths, and control the daemon. The convenience wrappers do not provide a flag to disable this access; use `bwrap-isolate.sh` directly when Docker access is not required.
 
 Docker configuration and credentials under `~/.docker` are not exposed automatically. If a command needs them, bind the directory read-only explicitly and review its contents first because it may contain registry credentials.
 

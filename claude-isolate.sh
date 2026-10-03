@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Convenience wrapper for running Claude Code with the permissive agent sandbox.
 # Equivalent to:
-#   bwrap-isolate.sh --gpg --allow-hardlinks --follow-symlinks \
-#     --bind-rw "$HOME/.claude" --bind-ro "$HOME/.agents" -- claude
+#   bwrap-isolate.sh --gpg --docker-socket --allow-hardlinks --follow-symlinks \
+#     --bind-rw "$HOME/.claude" --bind-rw "$HOME/.claude.json" -- claude
 
 set -Eeuo pipefail
 
@@ -31,7 +31,8 @@ bwrap-isolate.sh directly when hard-link and symlink protections matter.
 Additional file/directory bind options are passed to bwrap-isolate.sh before `claude`.
 The active read-only paths, including Git config, attributes, and ignore files, are listed in
 readonly_bind_paths; missing paths are skipped. Uncomment optional paths there only when needed.
-Docker socket access is not enabled by this wrapper.
+This wrapper exposes the host Docker API socket on every run. This grants
+root-equivalent control of the Docker host; use bwrap-isolate.sh for default-deny.
 EOF
 }
 
@@ -124,6 +125,6 @@ fi
 }
 declare -a claude_rw_args=(--bind-rw "$HOME/.claude" --bind-rw "$claude_state_file")
 
-exec "$LAUNCHER" --gpg --allow-hardlinks --follow-symlinks \
+exec "$LAUNCHER" --gpg --docker-socket --allow-hardlinks --follow-symlinks \
     "${claude_rw_args[@]}" "${profile_ro_args[@]}" \
     "${additional_mount_args[@]}" -- claude "$@"

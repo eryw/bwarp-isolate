@@ -485,6 +485,7 @@ mapfile -d '' -t captured_args < "$capture"
 require_pair --bind "$SANDBOX_HOME/.claude"
 require_pair --bind "$claude_state_file"
 require_pair --ro-bind "$claude_install_root"
+require_pair --bind /var/run/docker.sock
 require_pair --ro-bind "$extra_ro"
 require_no_destination "$SANDBOX_HOME/.omp"
 claude_command_seen=false
