@@ -24,9 +24,15 @@ for legacy_option in --home-ro --home-rw; do
 done
 
 SANDBOX_HOME="$TEST_ROOT/home"
-mkdir -p "$SANDBOX_HOME/work" "$SANDBOX_HOME/.agents" "$SANDBOX_HOME/.claude" "$SANDBOX_HOME/.codex" "$SANDBOX_HOME/.gemini" "$SANDBOX_HOME/.ddev" "$SANDBOX_HOME/.config/oh-my-pi"
+mkdir -p "$SANDBOX_HOME/work" "$SANDBOX_HOME/.agents" "$SANDBOX_HOME/.claude" "$SANDBOX_HOME/.codex" "$SANDBOX_HOME/.gemini" "$SANDBOX_HOME/.ddev" "$SANDBOX_HOME/.config/oh-my-pi" "$SANDBOX_HOME/.config/git" "$SANDBOX_HOME/.gnupg"
 mkdir -p "$SANDBOX_HOME/.local/bin" "$SANDBOX_HOME/.local/lib"
 mkdir -p "$SANDBOX_HOME/.omp/plugins" "$SANDBOX_HOME/go/bin"
+mkdir -p "$SANDBOX_HOME/.gnupg/private-keys-v1.d"
+git_global_config="$SANDBOX_HOME/.gitconfig"
+git_config_file="$SANDBOX_HOME/.config/git/config"
+git_attributes_file="$SANDBOX_HOME/.config/git/attributes"
+git_ignore_file="$SANDBOX_HOME/.config/git/ignore"
+touch "$git_global_config" "$git_config_file" "$git_attributes_file" "$git_ignore_file"
 printf 'plugin file\n' > "$SANDBOX_HOME/.omp/plugins/plugin"
 printf 'selected config\n' > "$SANDBOX_HOME/.agents/config"
 printf 'claude config\n' > "$SANDBOX_HOME/.claude/config"
@@ -35,6 +41,8 @@ printf 'gemini config\n' > "$SANDBOX_HOME/.gemini/config"
 extra_ro="$TEST_ROOT/shared-ro"
 extra_rw="$TEST_ROOT/shared-rw"
 mkdir -p "$extra_ro" "$extra_rw"
+gpg_socket_dir="$TEST_ROOT/gnupg-socket"
+mkdir -p "$gpg_socket_dir"
 printf 'read only\n' > "$extra_ro/input"
 outside="$TEST_ROOT/outside"
 hidden_host="$TEST_ROOT/hidden-host-file"
@@ -70,6 +78,12 @@ cat > "$fake_bin/bwrap" <<'EOF'
 printf '%s\0' "$@" > "${BWRAP_CAPTURE:?}"
 EOF
 chmod +x "$fake_bin/bwrap"
+cat > "$fake_bin/gpgconf" <<'EOF'
+#!/usr/bin/env bash
+[[ ${1-} == --list-dirs && ${2-} == socketdir ]] || exit 64
+printf '%s\n' "${BWRAP_GPG_SOCKET_DIR:?}"
+EOF
+chmod +x "$fake_bin/gpgconf"
 command -v script >/dev/null 2>&1 || fail 'script is required for confirmation tests'
 run_confirmed() {
     local answer=$1 transcript=$2 command_string=$3
@@ -126,10 +140,29 @@ require_no_triplet() {
         fi
     done
 }
-for home_path in "$SANDBOX_HOME/.agents" "$SANDBOX_HOME/.claude" "$SANDBOX_HOME/.codex" "$SANDBOX_HOME/.gemini"; do
+for home_path in "$SANDBOX_HOME/.agents" "$SANDBOX_HOME/.claude" "$SANDBOX_HOME/.codex" "$SANDBOX_HOME/.gemini" "$SANDBOX_HOME/.gnupg"; do
     require_no_destination "$home_path"
 done
+require_no_destination "$git_global_config"
 require_pair --ro-bind "$SANDBOX_HOME/.local/bin"
+(
+    cd -- "$SANDBOX_HOME/work"
+    BWRAP_CAPTURE="$capture" BWRAP_GPG_SOCKET_DIR="$gpg_socket_dir" HOME="$SANDBOX_HOME" PATH="$fake_bin:/usr/bin:/bin" \
+        GNUPGHOME="$SANDBOX_HOME/.gnupg" "$LAUNCHER" --gpg -- true
+)
+mapfile -d '' -t captured_args < "$capture"
+require_pair --bind "$SANDBOX_HOME/.gnupg"
+require_triplet --setenv GNUPGHOME "$SANDBOX_HOME/.gnupg"
+require_pair --bind "$gpg_socket_dir"
+require_pair --tmpfs "$SANDBOX_HOME/.gnupg/private-keys-v1.d"
+(
+    cd -- "$SANDBOX_HOME/work"
+    BWRAP_CAPTURE="$capture" HOME="$SANDBOX_HOME" PATH="$fake_bin:/usr/bin:/bin" \
+        GNUPGHOME="$SANDBOX_HOME/.gnupg" "$LAUNCHER" -- true
+)
+mapfile -d '' -t captured_args < "$capture"
+require_no_destination "$SANDBOX_HOME/.gnupg"
+require_no_triplet --setenv GNUPGHOME "$SANDBOX_HOME/.gnupg"
 for ((index = 0; index + 2 < ${#captured_args[@]}; index++)); do
     if [[ ${captured_args[index]} == --ro-bind && ${captured_args[index + 1]} == / &&
         ${captured_args[index + 2]} == / ]]; then
@@ -393,7 +426,7 @@ fi
 mkdir -p "$TEST_ROOT/wrapper-work"
 (
     cd -- "$TEST_ROOT/wrapper-work"
-    BWRAP_CAPTURE="$capture" HOME="$SANDBOX_HOME" MISE_DATA_DIR="$mise_data" PATH="$fake_bin:/usr/bin:/bin" \
+    BWRAP_CAPTURE="$capture" BWRAP_GPG_SOCKET_DIR="$gpg_socket_dir" HOME="$SANDBOX_HOME" GNUPGHOME="$SANDBOX_HOME/.gnupg" XDG_CONFIG_HOME="$SANDBOX_HOME/.config" MISE_DATA_DIR="$mise_data" PATH="$fake_bin:/usr/bin:/bin" \
         "$WRAPPER" --bind-ro "$extra_ro" --bind-rw "$extra_rw"
 )
 mapfile -d '' -t captured_args < "$capture"
@@ -406,5 +439,14 @@ require_pair --ro-bind "$SANDBOX_HOME/.omp/plugins"
 require_pair --ro-bind "$extra_ro"
 require_pair --bind "$extra_rw"
 require_no_destination "$SANDBOX_HOME/go/bin"
+require_pair --bind "$SANDBOX_HOME/.gnupg"
+require_triplet --setenv GNUPGHOME "$SANDBOX_HOME/.gnupg"
+require_pair --bind "$gpg_socket_dir"
+require_pair --tmpfs "$SANDBOX_HOME/.gnupg/private-keys-v1.d"
+require_pair --ro-bind "$git_global_config"
+require_pair --ro-bind "$git_config_file"
+require_pair --ro-bind "$git_attributes_file"
+require_triplet --setenv XDG_CONFIG_HOME "$SANDBOX_HOME/.config"
+require_pair --ro-bind "$git_ignore_file"
 
 printf 'sandbox boundary checks passed\n'

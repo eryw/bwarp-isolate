@@ -17,9 +17,10 @@ usage() {
 Usage:
   bwrap-isolate.sh [OPTIONS] [--] COMMAND [ARG ...]
 
-  --bind-ro PATH        Bind an existing directory read-only (repeatable).
+  --bind-ro PATH        Bind an existing file or directory read-only (repeatable).
   --bind-rw PATH        Bind an existing directory read-write (repeatable).
   --mise                Set BWRAP_MISE=1.
+  --gpg                 Expose the GPG home and agent socket for signing.
   --docker-socket       Expose /var/run/docker.sock to the command.
   --allow-hardlinks     Disable hard-link boundary validation.
   --follow-symlinks     List and confirm every resolved external symlink target;
@@ -43,10 +44,12 @@ Defaults:
   - environment: cleared, with locale/terminal variables restored
   - user namespaces: required; nested user namespaces disabled
 Options and environment settings:
-  --bind-ro PATH      Mount an existing directory at its resolved absolute
-                      path in the sandbox, read-only. Repeat for more paths.
+  --bind-ro PATH      Mount an existing file or directory at its resolved
+                      absolute path in the sandbox, read-only. Repeatable.
   --bind-rw PATH      Like --bind-ro, but writable and persistent. Writable
                       paths are subject to hard-link validation.
+  --gpg               Mount GNUPGHOME and the gpgconf-reported agent socket
+                      read-write; mask private-keys-v1.d from the command.
   BWRAP_MISE          Set to 1 to expose mise's data directory and shims
                       read-only, and prepend the shims to PATH.
   BWRAP_PASSTHROUGH_ENV
@@ -70,6 +73,7 @@ Examples:
 BWRAP_MISE=1 ./bwrap-isolate.sh -- node --version
 ./bwrap-isolate.sh --mount-root-ro -- sh -c 'cat /etc/os-release'
 BWRAP_DOCKER_SOCKET=1 ./bwrap-isolate.sh -- ddev describe
+./bwrap-isolate.sh --gpg -- git commit -S -m 'Signed commit'
 
 Security notes:
   - The sandbox does not mount the host root by default; only listed runtime
@@ -84,6 +88,9 @@ Security notes:
     interactive confirmation before it is mounted writable. A project symlink
     to `/` can therefore expose the host filesystem to the invoking user's
     existing permissions. Use only with trusted projects.
+  - --gpg exposes the GPG home and agent socket. Secret key files in
+    private-keys-v1.d are masked; the host agent can still use them to sign.
+    The command can request signatures and modify other GPG-home files.
   - Network access and explicitly passed secrets remain available by design.
   - The launcher rejects work directories and writable bind mounts containing
     hard-linked regular files; move or copy such files before retrying.
@@ -122,6 +129,7 @@ allow_hardlinks=false
 follow_symlinks=false
 mount_root_ro=false
 docker_socket=false
+gpg_enabled=false
 declare -a additional_ro_requested=()
 declare -a additional_rw_requested=()
 while (( $# > 0 )); do
@@ -142,6 +150,10 @@ while (( $# > 0 )); do
             ;;
         --bind-rw=*)
             additional_rw_requested+=("${1#*=}")
+            shift
+            ;;
+        --gpg)
+            gpg_enabled=true
             shift
             ;;
         --mise)
@@ -325,22 +337,59 @@ case ${BWRAP_MISE:-0} in
 esac
 declare -a resolved_additional_ro=()
 declare -a resolved_additional_rw=()
-resolve_additional_dirs() {
-    local requested_path resolved_path
-    local -n output_paths=$1
-    shift
+resolve_additional_paths() {
+    local output_name=$1 allow_files=$2 requested_path resolved_path
+    local -n output_paths=$output_name
+    shift 2
     for requested_path in "$@"; do
         [[ -n $requested_path ]] || fail 'additional bind path must not be empty'
         resolved_path=$(realpath -e -- "$requested_path" 2>/dev/null) || \
             fail "additional bind path does not exist: $requested_path"
-        [[ -d $resolved_path ]] || fail "additional bind path must be a directory: $requested_path"
+        if [[ ! -d $resolved_path && ( $allow_files != true || ! -f $resolved_path ) ]]; then
+            if [[ $allow_files == true ]]; then
+                fail "read-only bind path must be a file or directory: $resolved_path"
+            fi
+            fail "read-write bind path must be a directory: $resolved_path"
+        fi
         [[ $resolved_path != / && $resolved_path != /tmp && $resolved_path != /run ]] || \
             fail "refusing special additional bind path: $resolved_path"
         output_paths+=("$resolved_path")
     done
 }
-resolve_additional_dirs resolved_additional_ro "${additional_ro_requested[@]}"
-resolve_additional_dirs resolved_additional_rw "${additional_rw_requested[@]}"
+resolve_additional_paths resolved_additional_ro true "${additional_ro_requested[@]}"
+resolve_additional_paths resolved_additional_rw false "${additional_rw_requested[@]}"
+gpg_home=
+gpg_socket_dir=
+if [[ $gpg_enabled == true ]]; then
+    gpg_home=${GNUPGHOME:-"$HOME/.gnupg"}
+    [[ $gpg_home == /* ]] || fail "GNUPGHOME must be absolute: $gpg_home"
+    if [[ -e $gpg_home ]]; then
+        gpg_home=$(realpath -e -- "$gpg_home") || fail "cannot resolve GPG home: $gpg_home"
+        [[ -d $gpg_home ]] || fail "GPG home must be a directory: $gpg_home"
+        command -v gpgconf >/dev/null 2>&1 || fail 'gpgconf is required for --gpg'
+        gpg_socket_dir=$(GNUPGHOME="$gpg_home" gpgconf --list-dirs socketdir) || \
+            fail 'cannot determine the GPG agent socket directory'
+        [[ $gpg_socket_dir == /* ]] || fail "GPG socket directory must be absolute: $gpg_socket_dir"
+        gpg_socket_dir=$(realpath -e -- "$gpg_socket_dir" 2>/dev/null) || \
+            fail "GPG socket directory does not exist: $gpg_socket_dir"
+        [[ -d $gpg_socket_dir ]] || fail "GPG socket path is not a directory: $gpg_socket_dir"
+        resolved_additional_rw+=("$gpg_home")
+        case "$gpg_socket_dir" in
+            "$gpg_home"|"$gpg_home"/*)
+                ;;
+            *)
+                case "$gpg_home" in
+                    "$gpg_socket_dir"/*)
+                        fail "GPG socket directory contains GPG home: $gpg_socket_dir"
+                        ;;
+                esac
+                resolved_additional_rw+=("$gpg_socket_dir")
+                ;;
+        esac
+    elif [[ -v GNUPGHOME ]]; then
+        fail "GPG home does not exist: $gpg_home"
+    fi
+fi
 
 # Keep the standard user executable directory available without exposing the
 # rest of HOME; an explicit bind option can replace this default permission.
@@ -494,6 +543,10 @@ done
 for target in "${resolved_additional_ro[@]}"; do
     bwrap_args+=(--ro-bind "$target" "$target")
 done
+if [[ $gpg_enabled == true && -n $gpg_home && -d $gpg_home/private-keys-v1.d ]]; then
+    # Signing is delegated to the host agent; do not expose its on-disk secret keys.
+    bwrap_args+=(--tmpfs "$gpg_home/private-keys-v1.d")
+fi
 
 # Confirmed symlink targets come last and grant writable access explicitly.
 for target in "${symlink_targets[@]}"; do
@@ -521,6 +574,9 @@ bwrap_args+=(
     --setenv XDG_STATE_HOME /tmp/xdg-state
 )
 
+if [[ $gpg_enabled == true && -n $gpg_home && -d $gpg_home ]]; then
+    bwrap_args+=(--setenv GNUPGHOME "$gpg_home")
+fi
 if [[ $mise_enabled == true ]]; then
     bwrap_args+=(
         --setenv MISE_DATA_DIR "$mise_data_dir"

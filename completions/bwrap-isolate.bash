@@ -13,7 +13,11 @@ _bwrap_isolate_complete() {
     done
 
     case $previous in
-        --bind-ro|--bind-rw)
+        --bind-ro)
+            COMPREPLY=( $(compgen -f -- "$current") )
+            return 0
+            ;;
+        --bind-rw)
             COMPREPLY=( $(compgen -d -- "$current") )
             return 0
             ;;
@@ -27,6 +31,7 @@ _bwrap_isolate_complete() {
         --bind-ro
         --bind-rw
         --mise
+        --gpg
         --passthrough-env
         --allow-hardlinks
         --follow-symlinks

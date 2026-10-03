@@ -102,9 +102,19 @@ Pass additional paths to the wrapper before the `omp` arguments:
 ./omp-isolate.sh --bind-ro ../shared-library --bind-rw ../generated-data -- --help
 ```
 
-The wrapper forwards these mount options to `bwrap-isolate.sh`; read-write paths persist to the host.
+The wrapper bind-mounts existing Git global config files (`~/.gitconfig` and `$XDG_CONFIG_HOME/git/config`) and the conventional global attributes/ignore files under `$XDG_CONFIG_HOME/git/` read-only. When `XDG_CONFIG_HOME` is unset it defaults to `~/.config`; an explicit absolute value is preserved in the sandbox. Missing paths are skipped. Git still applies its normal config precedence, so the presence of both config files does not mean Git reads both.
+
+The wrapper forwards additional read-only file or directory binds and read-write directory binds to `bwrap-isolate.sh`; read-write paths persist to the host.
 
 To use a different Oh My Pi configuration directory, invoke the launcher directly with the desired `--bind-rw PATH`.
+
+`omp-isolate.sh` enables GPG access so `omp` can sign commits with the host GPG agent. The minimal launcher keeps it disabled unless `--gpg` is passed:
+
+```sh
+./bwrap-isolate.sh --gpg -- git commit -S -m 'Signed commit'
+```
+
+`--gpg` mounts `GNUPGHOME` (or `~/.gnupg`) and the socket directory reported by `gpgconf --list-dirs socketdir` read-write, then sets `GNUPGHOME` in the sandbox. If `private-keys-v1.d` exists, it is masked from the sandbox; the host agent retains access to its own key files and can sign. The command can request signatures and modify other GPG-home files, so enable this only for trusted commands. The option requires an existing GPG home and socket directory; an explicitly configured but missing `GNUPGHOME` is an error. Git configuration and passphrase-terminal forwarding are not enabled by `--gpg`.
 
 ## Docker API access
 
@@ -131,9 +141,10 @@ For the strongest isolation, keep Docker administration outside the sandbox and 
 ## Launcher options
 
 ```text
---bind-ro PATH          Bind an additional existing directory read-only (repeatable).
+--bind-ro PATH          Bind an additional existing file or directory read-only (repeatable).
 --bind-rw PATH          Bind an additional existing directory read-write (repeatable).
 --mise                  Set BWRAP_MISE=1.
+--gpg                   Expose GPG home and agent socket for signing (opt-in).
 --passthrough-env NAMES Set BWRAP_PASSTHROUGH_ENV (colon-separated names).
 --docker-socket         Expose /var/run/docker.sock to the command.
 --allow-hardlinks       Disable hard-link boundary validation.

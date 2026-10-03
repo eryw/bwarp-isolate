@@ -2,9 +2,10 @@
 
 _bwrap_isolate() {
     _arguments -s \
-        '--bind-ro[bind an additional directory read-only]:path:_files -/' \
+        '--bind-ro[bind an additional file or directory read-only]:path:_files' \
         '--bind-rw[bind an additional directory read-write]:path:_files -/' \
         '--mise[enable mise support]' \
+        '--gpg[expose GPG home and agent socket for signing]' \
         '--passthrough-env[environment variable names]:names:' \
         '--allow-hardlinks[disable hard-link validation]' \
         '--follow-symlinks[confirm external symlink targets]' \
