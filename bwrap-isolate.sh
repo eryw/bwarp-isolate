@@ -18,7 +18,7 @@ Usage:
   bwrap-isolate.sh [OPTIONS] [--] COMMAND [ARG ...]
 
   --bind-ro PATH        Bind an existing file or directory read-only (repeatable).
-  --bind-rw PATH        Bind an existing directory read-write (repeatable).
+  --bind-rw PATH        Bind an existing file or directory read-write (repeatable).
   --mise                Set BWRAP_MISE=1.
   --gpg                 Expose the GPG home and agent socket for signing.
   --docker-socket       Expose /var/run/docker.sock to the command.
@@ -37,7 +37,7 @@ Defaults:
   - current directory: writable and persistent
   - root filesystem: empty except for explicit runtime mounts
   - system executables, libraries, Python packages, and common data: readable
-  - HOME: empty except for read-only ~/.local/bin and explicitly bound directories
+  - HOME: empty except for read-only ~/.local/bin and explicitly bound paths
   - unrelated host directories: hidden unless explicitly bound
   - /tmp and /run: private temporary filesystems
   - network: available
@@ -46,8 +46,9 @@ Defaults:
 Options and environment settings:
   --bind-ro PATH      Mount an existing file or directory at its resolved
                       absolute path in the sandbox, read-only. Repeatable.
-  --bind-rw PATH      Like --bind-ro, but writable and persistent. Writable
-                      paths are subject to hard-link validation.
+  --bind-rw PATH      Like --bind-ro, but writable and persistent. PATH may be
+                      a file or directory. Writable paths are subject to
+                      hard-link validation.
   --gpg               Mount GNUPGHOME and the gpgconf-reported agent socket
                       read-write; mask private-keys-v1.d from the command.
   BWRAP_MISE          Set to 1 to expose mise's data directory and shims
@@ -338,26 +339,22 @@ esac
 declare -a resolved_additional_ro=()
 declare -a resolved_additional_rw=()
 resolve_additional_paths() {
-    local output_name=$1 allow_files=$2 requested_path resolved_path
+    local output_name=$1 requested_path resolved_path
     local -n output_paths=$output_name
-    shift 2
+    shift
     for requested_path in "$@"; do
         [[ -n $requested_path ]] || fail 'additional bind path must not be empty'
         resolved_path=$(realpath -e -- "$requested_path" 2>/dev/null) || \
             fail "additional bind path does not exist: $requested_path"
-        if [[ ! -d $resolved_path && ( $allow_files != true || ! -f $resolved_path ) ]]; then
-            if [[ $allow_files == true ]]; then
-                fail "read-only bind path must be a file or directory: $resolved_path"
-            fi
-            fail "read-write bind path must be a directory: $resolved_path"
-        fi
+        [[ -d $resolved_path || -f $resolved_path ]] || \
+            fail "additional bind path must be a regular file or directory: $resolved_path"
         [[ $resolved_path != / && $resolved_path != /tmp && $resolved_path != /run ]] || \
             fail "refusing special additional bind path: $resolved_path"
         output_paths+=("$resolved_path")
     done
 }
-resolve_additional_paths resolved_additional_ro true "${additional_ro_requested[@]}"
-resolve_additional_paths resolved_additional_rw false "${additional_rw_requested[@]}"
+resolve_additional_paths resolved_additional_ro "${additional_ro_requested[@]}"
+resolve_additional_paths resolved_additional_rw "${additional_rw_requested[@]}"
 gpg_home=
 gpg_socket_dir=
 if [[ $gpg_enabled == true ]]; then

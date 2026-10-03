@@ -38,6 +38,8 @@ printf 'selected config\n' > "$SANDBOX_HOME/.agents/config"
 printf 'claude config\n' > "$SANDBOX_HOME/.claude/config"
 printf 'codex config\n' > "$SANDBOX_HOME/.codex/config"
 printf 'gemini config\n' > "$SANDBOX_HOME/.gemini/config"
+claude_state_file="$SANDBOX_HOME/.claude.json"
+printf '{"projectTrust":{}}\n' > "$claude_state_file"
 extra_ro="$TEST_ROOT/shared-ro"
 extra_rw="$TEST_ROOT/shared-rw"
 mkdir -p "$extra_ro" "$extra_rw"
@@ -215,6 +217,13 @@ require_pair --ro-bind "$SANDBOX_HOME/.local/bin"
 (
     cd -- "$SANDBOX_HOME/work"
     BWRAP_CAPTURE="$capture" HOME="$SANDBOX_HOME" PATH="$fake_bin:/usr/bin:/bin" \
+        "$LAUNCHER" --bind-rw "$claude_state_file" -- true
+)
+mapfile -d '' -t captured_args < "$capture"
+require_pair --bind "$claude_state_file"
+(
+    cd -- "$SANDBOX_HOME/work"
+    BWRAP_CAPTURE="$capture" HOME="$SANDBOX_HOME" PATH="$fake_bin:/usr/bin:/bin" \
         "$LAUNCHER" --bind-rw "$SANDBOX_HOME/.local/bin" -- true
 )
 mapfile -d '' -t captured_args < "$capture"
@@ -335,6 +344,18 @@ if hardlink_error=$(
 fi
 [[ $hardlink_error == *PIXI_NO_HARD_LINKS* ]] || fail 'hardlink error omitted Pixi guidance'
 [[ $hardlink_error == *package-import-method=copy* ]] || fail 'hardlink error omitted pnpm guidance'
+hardlinked_state_file="$TEST_ROOT/hardlinked-state.json"
+printf 'state\n' > "$hardlinked_state_file"
+ln "$hardlinked_state_file" "$TEST_ROOT/external-state-link"
+if hardlink_file_error=$(
+    cd -- "$TEST_ROOT/hardlink-work"
+    HOME="$SANDBOX_HOME" \
+        "$LAUNCHER" --bind-rw "$hardlinked_state_file" -- true 2>&1
+); then
+    fail 'sandbox accepted a writable file bind with an external hard link'
+fi
+[[ $hardlink_file_error == *PIXI_NO_HARD_LINKS* ]] || \
+    fail 'writable file hard-link rejection omitted Pixi guidance'
 additional_hardlink_dir="$TEST_ROOT/additional-hardlink-dir"
 mkdir "$additional_hardlink_dir"
 ln "$external_source" "$additional_hardlink_dir/external-link"
@@ -449,4 +470,35 @@ require_pair --ro-bind "$git_attributes_file"
 require_triplet --setenv XDG_CONFIG_HOME "$SANDBOX_HOME/.config"
 require_pair --ro-bind "$git_ignore_file"
 
+mkdir -p "$TEST_ROOT/claude-wrapper-work"
+(
+    cd -- "$TEST_ROOT/claude-wrapper-work"
+    BWRAP_CAPTURE="$capture" BWRAP_GPG_SOCKET_DIR="$gpg_socket_dir" HOME="$SANDBOX_HOME" GNUPGHOME="$SANDBOX_HOME/.gnupg" XDG_CONFIG_HOME="$SANDBOX_HOME/.config" MISE_DATA_DIR="$mise_data" PATH="$fake_bin:/usr/bin:/bin" \
+        "$ROOT/claude-isolate.sh" --bind-ro "$extra_ro" -- --version
+)
+mapfile -d '' -t captured_args < "$capture"
+require_pair --bind "$SANDBOX_HOME/.claude"
+require_pair --bind "$claude_state_file"
+require_pair --ro-bind "$SANDBOX_HOME/.agents"
+require_pair --ro-bind "$extra_ro"
+require_no_destination "$SANDBOX_HOME/.omp"
+claude_command_seen=false
+for ((index = 0; index + 2 < ${#captured_args[@]}; index++)); do
+    if [[ ${captured_args[index]} == -- && ${captured_args[index + 1]} == claude && ${captured_args[index + 2]} == --version ]]; then
+        claude_command_seen=true
+        break
+    fi
+done
+[[ $claude_command_seen == true ]] || fail 'Claude wrapper did not forward command arguments'
+
+rm "$claude_state_file"
+(
+    cd -- "$TEST_ROOT/claude-wrapper-work"
+    BWRAP_CAPTURE="$capture" BWRAP_GPG_SOCKET_DIR="$gpg_socket_dir" HOME="$SANDBOX_HOME" GNUPGHOME="$SANDBOX_HOME/.gnupg" XDG_CONFIG_HOME="$SANDBOX_HOME/.config" MISE_DATA_DIR="$mise_data" PATH="$fake_bin:/usr/bin:/bin" \
+        "$ROOT/claude-isolate.sh" -- --version
+)
+[[ -f $claude_state_file ]] || fail 'Claude wrapper did not create the state file before binding it'
+[[ $(stat -c '%a' "$claude_state_file") == 600 ]] || fail 'new Claude state file is not private'
+mapfile -d '' -t captured_args < "$capture"
+require_pair --bind "$claude_state_file"
 printf 'sandbox boundary checks passed\n'

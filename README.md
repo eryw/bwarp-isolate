@@ -28,8 +28,8 @@ To make both launchers available from any project directory, copy them to the st
 
 ```sh
 mkdir -p "$HOME/.local/bin"
-cp bwrap-isolate.sh omp-isolate.sh "$HOME/.local/bin/"
-chmod 755 "$HOME/.local/bin/bwrap-isolate.sh" "$HOME/.local/bin/omp-isolate.sh"
+cp bwrap-isolate.sh omp-isolate.sh claude-isolate.sh "$HOME/.local/bin/"
+chmod 755 "$HOME/.local/bin/bwrap-isolate.sh" "$HOME/.local/bin/omp-isolate.sh" "$HOME/.local/bin/claude-isolate.sh"
 ```
 
 Ensure that directory is on your `PATH`:
@@ -80,7 +80,7 @@ Bind another project or shared data directory at its resolved absolute path:
 ./bwrap-isolate.sh --bind-ro ../shared-library --bind-rw ../generated-data -- command
 ```
 
-Use repeatable `--bind-ro PATH` or `--bind-rw PATH` options. Both require existing directories; relative paths resolve from the directory where the launcher is started. Read-write mounts persist changes and are checked for hard-linked files unless hard-link validation is explicitly disabled. Conflicting binds are rejected; a read-only subtree may be nested under a read-write bind.
+Use repeatable `--bind-ro PATH` or `--bind-rw PATH` options. Both accept existing files or directories; relative paths resolve from the directory where the launcher is started. Read-write mounts persist changes and are checked for hard-linked files unless hard-link validation is explicitly disabled. Conflicting binds are rejected; a read-only subtree may be nested under a read-write directory bind.
 
 Changes made in the current directory persist on the host. Other host files are not writable unless explicitly exposed through `--bind-rw` or an approved external symlink.
 
@@ -104,7 +104,7 @@ Pass additional paths to the wrapper before the `omp` arguments:
 
 The wrapper bind-mounts existing Git global config files (`~/.gitconfig` and `$XDG_CONFIG_HOME/git/config`) and the conventional global attributes/ignore files under `$XDG_CONFIG_HOME/git/` read-only. When `XDG_CONFIG_HOME` is unset it defaults to `~/.config`; an explicit absolute value is preserved in the sandbox. Missing paths are skipped. Git still applies its normal config precedence, so the presence of both config files does not mean Git reads both.
 
-The wrapper forwards additional read-only file or directory binds and read-write directory binds to `bwrap-isolate.sh`; read-write paths persist to the host.
+The wrapper forwards additional read-only or read-write file and directory binds to `bwrap-isolate.sh`; read-write paths persist to the host.
 
 To use a different Oh My Pi configuration directory, invoke the launcher directly with the desired `--bind-rw PATH`.
 
@@ -115,6 +115,30 @@ To use a different Oh My Pi configuration directory, invoke the launcher directl
 ```
 
 `--gpg` mounts `GNUPGHOME` (or `~/.gnupg`) and the socket directory reported by `gpgconf --list-dirs socketdir` read-write, then sets `GNUPGHOME` in the sandbox. If `private-keys-v1.d` exists, it is masked from the sandbox; the host agent retains access to its own key files and can sign. The command can request signatures and modify other GPG-home files, so enable this only for trusted commands. The option requires an existing GPG home and socket directory; an explicitly configured but missing `GNUPGHOME` is an error. Git configuration and passphrase-terminal forwarding are not enabled by `--gpg`.
+
+## Claude Code wrapper
+
+`claude-isolate.sh` runs Claude Code through the same convenience profile style as `omp-isolate.sh`. It enables mise support, mounts `~/.claude` read-write for Claude Code configuration and authentication state, and ensures `~/.claude.json` exists before mounting it read-write (a missing file is created with mode `0600`). It exposes selected tool and Git configuration paths read-only, allows hard links, and asks before mounting external project symlinks:
+
+```sh
+cd /path/to/my-project
+/path/to/bwarp-isolate/claude-isolate.sh
+/path/to/bwarp-isolate/claude-isolate.sh --wrapper-help
+```
+
+The `~/.claude` directory and `~/.claude.json` file can contain Claude Code credentials and state; both are writable by the process. The wrapper refuses a symbolic link at `~/.claude.json` rather than creating or mounting an unexpected target. Review the project and trust the code before launching. The wrapper does not expose the Docker socket. Use `bwrap-isolate.sh` directly when hard-link validation and stricter control are important.
+
+Pass extra bind paths before Claude Code arguments:
+
+```sh
+./claude-isolate.sh --bind-ro ../shared-library --bind-rw ../generated-data -- --help
+```
+
+Environment variables are filtered by the base launcher. To pass an API key explicitly, allowlist it:
+
+```sh
+BWRAP_PASSTHROUGH_ENV=ANTHROPIC_API_KEY ./claude-isolate.sh
+```
 
 ## Docker API access
 
@@ -142,7 +166,7 @@ For the strongest isolation, keep Docker administration outside the sandbox and 
 
 ```text
 --bind-ro PATH          Bind an additional existing file or directory read-only (repeatable).
---bind-rw PATH          Bind an additional existing directory read-write (repeatable).
+--bind-rw PATH          Bind an additional existing file or directory read-write (repeatable).
 --mise                  Set BWRAP_MISE=1.
 --gpg                   Expose GPG home and agent socket for signing (opt-in).
 --passthrough-env NAMES Set BWRAP_PASSTHROUGH_ENV (colon-separated names).
@@ -163,7 +187,7 @@ The launcher masks host `HOME` with an empty tmpfs. If it exists, `~/.local/bin`
   -- command
 ```
 
-Read-write binds persist changes to the host and undergo hard-link validation. A read-only bind may be nested inside a read-write bind; the read-only mount is applied last. Binds cannot overlap the working directory, HOME itself, or each other in conflicting ways. Avoid broad paths such as `/` or all of `HOME`.
+Read-write binds persist changes to the host and undergo hard-link validation. A read-only bind may be nested inside a read-write directory bind; the read-only mount is applied last. Binds cannot overlap the working directory, HOME itself, or each other in conflicting ways. Avoid broad paths such as `/` or all of `HOME`.
 
 `omp-isolate.sh` defines a convenience profile in `readonly_bind_paths`. It binds selected tool and agent directories read-only, `~/.omp` read-write, and `~/.omp/plugins` read-only. Missing optional read-only profile directories are skipped.
 
@@ -220,7 +244,7 @@ A writable project directory is therefore an intentional exception: an agent can
 ## Safety notes
 
 - Do not bind broad paths such as all of `HOME`.
-- Review every `--bind-ro` and `--bind-rw` path: these options expose arbitrary host directories at their absolute paths inside the sandbox, and read-write changes persist on the host.
+- Review every `--bind-ro` and `--bind-rw` path: these options expose arbitrary host files or directories at their absolute paths inside the sandbox, and read-write changes persist on the host.
 - Treat `--follow-symlinks` as unsafe for untrusted projects. A symlink to `/` can expose the host filesystem with your existing permissions.
 - `--mount-root-ro` makes the host filesystem readable. It does not make explicitly writable mounts safe.
 - Secrets explicitly passed through the environment and data reachable over the network remain exposed.
