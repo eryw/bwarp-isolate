@@ -93,6 +93,7 @@ readonly_bind_paths=(
     "$git_config_home/git/config"
     "$git_config_home/git/attributes"
     "$git_config_home/git/ignore"
+    "$HOME/.local/share/claude"
     "$HOME/.ddev"
     "$HOME/.cargo/bin"
     "$HOME/.bun/bin"

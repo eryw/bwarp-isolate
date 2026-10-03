@@ -118,7 +118,7 @@ To use a different Oh My Pi configuration directory, invoke the launcher directl
 
 ## Claude Code wrapper
 
-`claude-isolate.sh` runs Claude Code through the same convenience profile style as `omp-isolate.sh`. It enables mise support, mounts `~/.claude` read-write for Claude Code configuration and authentication state, and ensures `~/.claude.json` exists before mounting it read-write (a missing file is created with mode `0600`). It exposes selected tool and Git configuration paths read-only, allows hard links, and asks before mounting external project symlinks:
+`claude-isolate.sh` runs Claude Code through the same convenience profile style as `omp-isolate.sh`. It enables mise support, mounts `~/.claude` read-write for Claude Code configuration and authentication state, and ensures `~/.claude.json` exists before mounting it read-write (a missing file is created with mode `0600`). It exposes `~/.local/share/claude` read-only so the standard `~/.local/bin/claude` symlink can resolve, plus selected tool and Git configuration paths read-only. It allows hard links and asks before mounting external project symlinks:
 
 ```sh
 cd /path/to/my-project
